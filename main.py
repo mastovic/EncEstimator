@@ -110,6 +110,13 @@ def make_service_row(cp_height, group_name, row_type, label):
     }
 
 
+def make_layout_unit(rows):
+    return {
+        "rows": rows,
+        "total_height": sum(row["cp_height"] for row in rows),
+    }
+
+
 def preferred_incoming_cubicles(num_cubicles):
     return list(range(num_cubicles))
 
@@ -120,26 +127,28 @@ def preferred_outgoing_cubicles(num_cubicles):
     return [1, 0] + list(range(2, num_cubicles))
 
 
-def pack_rows(rows, num_cubicles, section_height, preferred_cubicles):
+def pack_layout_units(units, num_cubicles, section_height, preferred_cubicles):
     if section_height < 0:
-        return None
+        return None, None
 
     bins = [section_height] * num_cubicles
     packing_plan = [[] for _ in range(num_cubicles)]
+    used_heights = [0] * num_cubicles
 
-    for row in rows:
+    for unit in units:
         placed = False
         for cubicle_idx in preferred_cubicles(num_cubicles):
-            if bins[cubicle_idx] >= row["cp_height"]:
-                bins[cubicle_idx] -= row["cp_height"]
-                packing_plan[cubicle_idx].append(row)
+            if bins[cubicle_idx] >= unit["total_height"]:
+                bins[cubicle_idx] -= unit["total_height"]
+                packing_plan[cubicle_idx].extend(unit["rows"])
+                used_heights[cubicle_idx] += unit["total_height"]
                 placed = True
                 break
 
         if not placed:
-            return None
+            return None, None
 
-    return packing_plan
+    return packing_plan, used_heights
 
 def Options_selector_dict(Key, Selection_list):
     choice_list= [d[Key] for d in Selection_list if isinstance(d, dict) and Key in d]
@@ -187,21 +196,25 @@ def calculate_enclosure(incoming_list, outgoing_list, use_terminal_blocks=False)
     incoming_rows = build_breaker_rows("incoming", incoming_list, MAX_DB_WIDTH)
     outgoing_breaker_rows = build_breaker_rows("outgoing", outgoing_list, MAX_DB_WIDTH)
 
+    incoming_units = []
     if use_terminal_blocks and incoming_rows:
-        incoming_rows.append(
-            make_service_row(
-                TERMINAL_BLOCK_ROW_HEIGHT,
-                "incoming",
-                "terminal_blocks",
-                "Terminal Blocks",
-            )
+        incoming_units.append(
+            make_layout_unit([
+                make_service_row(
+                    TERMINAL_BLOCK_ROW_HEIGHT,
+                    "incoming",
+                    "terminal_blocks",
+                    "Terminal Blocks",
+                )
+            ])
         )
+    incoming_units.extend(make_layout_unit([row]) for row in incoming_rows)
 
-    outgoing_rows = []
+    outgoing_units = []
     for row in outgoing_breaker_rows:
-        outgoing_rows.append(row)
+        unit_rows = [row]
         if not use_terminal_blocks:
-            outgoing_rows.append(
+            unit_rows.append(
                 make_service_row(
                     CABLE_TERMINATION_ROW_HEIGHT,
                     "outgoing",
@@ -209,6 +222,7 @@ def calculate_enclosure(incoming_list, outgoing_list, use_terminal_blocks=False)
                     "Cable Termination Space",
                 )
             )
+        outgoing_units.append(make_layout_unit(unit_rows))
 
     distribution_row = make_service_row(
         DISTRIBUTION_ROW_HEIGHT,
@@ -239,12 +253,12 @@ def calculate_enclosure(incoming_list, outgoing_list, use_terminal_blocks=False)
                 continue
 
             min_lower_height = 0
-            if incoming_rows:
-                min_lower_height = max(row["cp_height"] for row in incoming_rows)
+            if incoming_units:
+                min_lower_height = max(unit["total_height"] for unit in incoming_units)
 
             for lower_section_height in range(int(min_lower_height), int(usable_height + 1), 100):
-                incoming_plan = pack_rows(
-                    incoming_rows,
+                incoming_plan, lower_used_heights = pack_layout_units(
+                    incoming_units,
                     num_cubicles,
                     lower_section_height,
                     preferred_incoming_cubicles,
@@ -253,14 +267,16 @@ def calculate_enclosure(incoming_list, outgoing_list, use_terminal_blocks=False)
                     continue
 
                 upper_section_height = usable_height - lower_section_height
-                outgoing_plan = pack_rows(
-                    outgoing_rows,
+                outgoing_plan, upper_used_heights = pack_layout_units(
+                    outgoing_units,
                     num_cubicles,
                     upper_section_height,
                     preferred_outgoing_cubicles,
                 )
                 if outgoing_plan is None:
                     continue
+
+                aligned_lower_height = max(lower_used_heights, default=0)
 
                 return {
                     "status": "Success",
@@ -272,6 +288,9 @@ def calculate_enclosure(incoming_list, outgoing_list, use_terminal_blocks=False)
                         "distribution_row": distribution_row,
                         "lower_section_height": lower_section_height,
                         "upper_section_height": upper_section_height,
+                        "aligned_lower_height": aligned_lower_height,
+                        "lower_used_heights": lower_used_heights,
+                        "upper_used_heights": upper_used_heights,
                     }
                 }
 
@@ -285,11 +304,11 @@ def draw_cubicle_layout(packing_plan, enclosure_details):
     # Extract enclosure dimensions for drawing the outer shells
     enc_w = get_record_value(enclosure_details, "width", 800)
     enc_h = get_record_value(enclosure_details, "height", 2000)
-    lower_section_height = packing_plan.get("lower_section_height", 0)
+    lower_section_height = packing_plan.get("aligned_lower_height", packing_plan.get("lower_section_height", 0))
     distribution_row = packing_plan.get("distribution_row", make_service_row(DISTRIBUTION_ROW_HEIGHT, "distribution", "distribution", "Distribution Space"))
     distribution_y0 = BOTTOM_CLEARANCE + lower_section_height
     distribution_y1 = distribution_y0 + distribution_row["cp_height"]
-    upper_start_y = enc_h - TOP_CLEARANCE
+    upper_used_heights = packing_plan.get("upper_used_heights", [])
 
     def row_style(row):
         row_type = row.get("row_type", "breaker")
@@ -382,7 +401,7 @@ def draw_cubicle_layout(packing_plan, enclosure_details):
 
         draw_row(distribution_row, x_offset, distribution_y0, distribution_y1)
 
-        current_upper_y = upper_start_y
+        current_upper_y = distribution_y1 + (upper_used_heights[cubicle_idx] if cubicle_idx < len(upper_used_heights) else 0)
         for row in packing_plan.get("upper_rows", [[] for _ in packing_plan.get("lower_rows", [])])[cubicle_idx]:
             row_y1 = current_upper_y
             row_y0 = current_upper_y - row["cp_height"]
