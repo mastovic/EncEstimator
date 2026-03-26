@@ -188,7 +188,7 @@ def draw_cubicle_layout(packing_plan, enclosure_details):
     enc_w = enclosure_details.get("width", 800)
     enc_h = enclosure_details.get("height", 2000)
     usable_height = enc_h - (200 + 150 + 200)
-    top_start_y = enc_h - 200 - 150
+    top_start_y = enc_h - 200 - 50
     
     # Total spacing between cubicles (e.g., 50mm gap for visual clarity)
     gutter = 100 
@@ -214,7 +214,7 @@ def draw_cubicle_layout(packing_plan, enclosure_details):
 
         # 2. Draw the Rows within this cubicle
         # Cubicle 1 fills from the bottom; extra cubicles fill from the top.
-        current_y = 200
+        current_y = 300
         current_top_y = top_start_y
         
         for row in rows:
