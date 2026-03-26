@@ -98,6 +98,41 @@ def build_breaker_rows(group_name, breakers, max_db_width):
     return processed_rows
 
 
+def build_layout_units_for_enclosure(incoming_breakers, outgoing_breakers, row_width_limit, use_terminal_blocks):
+    incoming_rows = build_breaker_rows("incoming", incoming_breakers, row_width_limit)
+    outgoing_breaker_rows = build_breaker_rows("outgoing", outgoing_breakers, row_width_limit)
+
+    incoming_units = []
+    if use_terminal_blocks and incoming_rows:
+        incoming_units.append(
+            make_layout_unit([
+                make_service_row(
+                    TERMINAL_BLOCK_ROW_HEIGHT,
+                    "incoming",
+                    "terminal_blocks",
+                    "Terminal Blocks",
+                )
+            ])
+        )
+    incoming_units.extend(make_layout_unit([row]) for row in incoming_rows)
+
+    outgoing_units = []
+    for row in outgoing_breaker_rows:
+        unit_rows = [row]
+        if not use_terminal_blocks:
+            unit_rows.append(
+                make_service_row(
+                    CABLE_TERMINATION_ROW_HEIGHT,
+                    "outgoing",
+                    "cable_termination",
+                    "Cable Termination Space",
+                )
+            )
+        outgoing_units.append(make_layout_unit(unit_rows))
+
+    return incoming_rows, outgoing_breaker_rows, incoming_units, outgoing_units
+
+
 def make_service_row(cp_height, group_name, row_type, label):
     return {
         "cp_height": cp_height,
@@ -189,63 +224,37 @@ def get_component(selected_components):
 
 def calculate_enclosure(incoming_list, outgoing_list, use_terminal_blocks=False):
     TRANOS_ENCLOSURES = load_Enclosure_registry()
-    
-    # 1. Determine the absolute maximum width available in your registry
-    MAX_DB_WIDTH = max((get_record_value(e, "width", 800) for e in TRANOS_ENCLOSURES), default=800) - 150 # -150 for margins
-
-    incoming_rows = build_breaker_rows("incoming", incoming_list, MAX_DB_WIDTH)
-    outgoing_breaker_rows = build_breaker_rows("outgoing", outgoing_list, MAX_DB_WIDTH)
-
-    incoming_units = []
-    if use_terminal_blocks and incoming_rows:
-        incoming_units.append(
-            make_layout_unit([
-                make_service_row(
-                    TERMINAL_BLOCK_ROW_HEIGHT,
-                    "incoming",
-                    "terminal_blocks",
-                    "Terminal Blocks",
-                )
-            ])
-        )
-    incoming_units.extend(make_layout_unit([row]) for row in incoming_rows)
-
-    outgoing_units = []
-    for row in outgoing_breaker_rows:
-        unit_rows = [row]
-        if not use_terminal_blocks:
-            unit_rows.append(
-                make_service_row(
-                    CABLE_TERMINATION_ROW_HEIGHT,
-                    "outgoing",
-                    "cable_termination",
-                    "Cable Termination Space",
-                )
-            )
-        outgoing_units.append(make_layout_unit(unit_rows))
-
-    distribution_row = make_service_row(
-        DISTRIBUTION_ROW_HEIGHT,
-        "distribution",
-        "distribution",
-        "Distribution Space",
-    )
-
-    breaker_rows = incoming_rows + outgoing_breaker_rows
+    all_breakers = incoming_list + outgoing_list
+    required_min_depth = max((get_record_value(breaker, "depth") for breaker in all_breakers), default=0) + 50
+    min_row_width_limit = max((get_record_value(breaker, "width") + BREAKER_GAP for breaker in all_breakers), default=0)
     
     for num_cubicles in range(1, 11): # Try up to 10 cubicles
-        # Find widest row to filter candidate enclosures
-        required_min_w = max((r["width"] for r in breaker_rows), default=0) + 100
-        required_min_d = max((r["depth"] for r in breaker_rows), default=0) + 50
-        
         candidates = [
             enclosure for enclosure in TRANOS_ENCLOSURES
-            if get_record_value(enclosure, "width") >= required_min_w
-            and get_record_value(enclosure, "depth") >= required_min_d
+            if (get_record_value(enclosure, "width") - 150) >= min_row_width_limit
+            and get_record_value(enclosure, "depth") >= required_min_depth
         ]
-        candidates.sort(key=lambda item: get_record_value(item, "height")) # Start with shortest valid enclosure
+        candidates.sort(key=lambda item: (get_record_value(item, "height"), get_record_value(item, "width")))
+
+        best_fit = None
+        best_score = None
 
         for enclosure in candidates:
+            row_width_limit = get_record_value(enclosure, "width") - 150
+            incoming_rows, outgoing_breaker_rows, incoming_units, outgoing_units = build_layout_units_for_enclosure(
+                incoming_list,
+                outgoing_list,
+                row_width_limit,
+                use_terminal_blocks,
+            )
+
+            distribution_row = make_service_row(
+                DISTRIBUTION_ROW_HEIGHT,
+                "distribution",
+                "distribution",
+                "Distribution Space",
+            )
+
             usable_height = get_record_value(enclosure, "height") - (
                 BOTTOM_CLEARANCE + TOP_CLEARANCE + DISTRIBUTION_ROW_HEIGHT
             )
@@ -277,8 +286,12 @@ def calculate_enclosure(incoming_list, outgoing_list, use_terminal_blocks=False)
                     continue
 
                 aligned_lower_height = max(lower_used_heights, default=0)
+                total_unused_height = sum(
+                    max(aligned_lower_height - lower_used, 0) + max(upper_section_height - upper_used, 0)
+                    for lower_used, upper_used in zip(lower_used_heights, upper_used_heights)
+                )
 
-                return {
+                current_fit = {
                     "status": "Success",
                     "cubicles": num_cubicles,
                     "enclosure_used": enclosure,
@@ -293,6 +306,21 @@ def calculate_enclosure(incoming_list, outgoing_list, use_terminal_blocks=False)
                         "upper_used_heights": upper_used_heights,
                     }
                 }
+
+                current_score = (
+                    total_unused_height,
+                    get_record_value(enclosure, "width"),
+                    get_record_value(enclosure, "height"),
+                )
+
+                if best_score is None or current_score < best_score:
+                    best_score = current_score
+                    best_fit = current_fit
+
+                break
+
+        if best_fit is not None:
+            return best_fit
 
     return {"status": "No Fit Found"}
 
