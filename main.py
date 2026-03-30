@@ -1,6 +1,7 @@
 import sqlite3
 import streamlit as st
 import plotly.graph_objects as go
+from typing import Any
 import BreakerFrame
 import EnclosureSizeSaver
 
@@ -42,14 +43,14 @@ def load_Enclosure_registry(db_path="Enclosure_sizes.db"):
     return [dict(row) for row in rows]
 
 
-def get_record_value(record, key, default=0):
+def get_record_value(record, key, default: Any = 0):
     return record.get(key, record.get(key.capitalize(), default))
 
 
 def get_cover_plate_height(breaker_height):
+    if breaker_height <= 100: return 100
     if breaker_height <= 200: return 200
-    if breaker_height <= 300: return 300
-    return 400
+    return 300
 
 
 def build_breaker_rows(group_name, breakers, max_db_width):
@@ -131,6 +132,162 @@ def build_layout_units_for_enclosure(incoming_breakers, outgoing_breakers, row_w
         outgoing_units.append(make_layout_unit(unit_rows))
 
     return incoming_rows, outgoing_breaker_rows, incoming_units, outgoing_units
+
+
+def get_3B_breaker_cubicle_width(breaker):
+    breaker_type = str(get_record_value(breaker, "type", "")).lower()
+    pole_count = int(get_record_value(breaker, "pole", 0) or 0)
+
+    if breaker_type == "acb" and pole_count == 4:
+        return 800
+    if breaker_type == "acb" and pole_count == 3:
+        return 600
+    if breaker_type == "mccb":
+        return 600
+    return 600
+
+
+def rotate_breaker_for_3B(breaker):
+    rotated_breaker = dict(breaker)
+    rotated_breaker["width"] = get_record_value(breaker, "height")
+    rotated_breaker["height"] = get_record_value(breaker, "width")
+    rotated_breaker["required_cubicle_width"] = get_3B_breaker_cubicle_width(breaker)
+    return rotated_breaker
+
+
+def build_3B_breaker_rows(group_name, breakers):
+    processed_rows = []
+
+    for breaker in breakers:
+        rotated_breaker = rotate_breaker_for_3B(breaker)
+        processed_rows.append({
+            "cp_height": get_cover_plate_height(get_record_value(rotated_breaker, "height")),
+            "width": get_record_value(rotated_breaker, "width") + BREAKER_GAP,
+            "depth": get_record_value(rotated_breaker, "depth"),
+            "breakers": [rotated_breaker],
+            "group": group_name,
+            "row_type": "breaker",
+            "label": None,
+            "required_cubicle_width": get_record_value(rotated_breaker, "required_cubicle_width", 600),
+        })
+
+    processed_rows.sort(key=lambda row: row["cp_height"], reverse=True)
+    return processed_rows
+
+
+def build_3B_layout_units(incoming_breakers, outgoing_breakers, use_terminal_blocks):
+    incoming_rows = build_3B_breaker_rows("incoming", incoming_breakers)
+    outgoing_rows = build_3B_breaker_rows("outgoing", outgoing_breakers)
+
+    incoming_units = []
+    if use_terminal_blocks and incoming_rows:
+        incoming_units.append(
+            make_layout_unit([
+                make_service_row(
+                    TERMINAL_BLOCK_ROW_HEIGHT,
+                    "incoming",
+                    "terminal_blocks",
+                    "Terminal Blocks",
+                )
+            ])
+        )
+    incoming_units.extend(make_layout_unit([row]) for row in incoming_rows)
+
+    outgoing_units = [make_layout_unit([row]) for row in outgoing_rows]
+    return incoming_rows, outgoing_rows, incoming_units, outgoing_units
+
+
+def get_3B_termination_cubicle_width(rows):
+    paired_breakers = [
+        breaker
+        for row in rows
+        for breaker in row.get("breakers", [])
+    ]
+    max_current = max((get_record_value(breaker, "max_current") for breaker in paired_breakers), default=0)
+    return 600 if max_current < 400 else 800
+
+
+def build_3B_lineup_cubicles(layout):
+    breaker_cubicles = []
+    lower_rows = layout.get("lower_rows", [])
+    upper_rows = layout.get("upper_rows", [])
+
+    for lower_group, upper_group in zip(lower_rows, upper_rows):
+        if not lower_group and not upper_group:
+            continue
+
+        breaker_rows = lower_group + upper_group
+        breaker_cubicles.append({
+            "kind": "breaker",
+            "label": f"Breaker Cubicle {len(breaker_cubicles) + 1}",
+            "width": max((row.get("required_cubicle_width", 600) for row in breaker_rows if row.get("row_type") == "breaker"), default=600),
+            "lower_rows": lower_group,
+            "upper_rows": upper_group,
+            "breaker_rows": breaker_rows,
+        })
+
+    lineup_cubicles = []
+    termination_count = 0
+    breaker_idx = 0
+
+    while breaker_idx < len(breaker_cubicles):
+        first_cubicle = breaker_cubicles[breaker_idx]
+
+        if breaker_idx + 1 < len(breaker_cubicles):
+            second_cubicle = breaker_cubicles[breaker_idx + 1]
+            shared_rows = first_cubicle["breaker_rows"] + second_cubicle["breaker_rows"]
+            lineup_cubicles.append(first_cubicle)
+            breaker_idx += 2
+
+            termination_count += 1
+            lineup_cubicles.append({
+                "kind": "termination",
+                "label": f"Termination Cubicle {termination_count}",
+                "width": get_3B_termination_cubicle_width(shared_rows),
+                "lower_rows": [],
+                "upper_rows": [],
+            })
+            lineup_cubicles.append(second_cubicle)
+        else:
+            lineup_cubicles.append(first_cubicle)
+            shared_rows = first_cubicle["breaker_rows"]
+            breaker_idx += 1
+            termination_count += 1
+            lineup_cubicles.append({
+                "kind": "termination",
+                "label": f"Termination Cubicle {termination_count}",
+                "width": get_3B_termination_cubicle_width(shared_rows),
+                "lower_rows": [],
+                "upper_rows": [],
+            })
+
+    return lineup_cubicles, len(breaker_cubicles), termination_count
+
+
+def find_common_3B_enclosure_details(enclosures, target_height, required_depth, required_widths):
+    chosen_sections = {}
+    section_depths = []
+
+    for required_width in sorted(required_widths):
+        matches = [
+            enclosure for enclosure in enclosures
+            if get_record_value(enclosure, "width") == required_width
+            and get_record_value(enclosure, "height") == target_height
+            and get_record_value(enclosure, "depth") >= required_depth
+        ]
+        if not matches:
+            return None
+
+        selected_section = min(matches, key=lambda enclosure: get_record_value(enclosure, "depth"))
+        chosen_sections[required_width] = selected_section
+        section_depths.append(get_record_value(selected_section, "depth"))
+
+    return {
+        "height": target_height,
+        "depth": max(section_depths, default=required_depth),
+        "section_widths": sorted(required_widths),
+        "sections": chosen_sections,
+    }
 
 
 def make_service_row(cp_height, group_name, row_type, label):
@@ -222,7 +379,7 @@ def get_component(selected_components):
     return result
 
 
-def calculate_enclosure(incoming_list, outgoing_list, use_terminal_blocks=False):
+def calculate_enclosure_2B(incoming_list, outgoing_list, use_terminal_blocks=False):
     TRANOS_ENCLOSURES = load_Enclosure_registry()
     all_breakers = incoming_list + outgoing_list
     required_min_depth = max((get_record_value(breaker, "depth") for breaker in all_breakers), default=0) + 50
@@ -285,10 +442,10 @@ def calculate_enclosure(incoming_list, outgoing_list, use_terminal_blocks=False)
                 if outgoing_plan is None:
                     continue
 
-                aligned_lower_height = max(lower_used_heights, default=0)
+                aligned_lower_height = max(lower_used_heights or [], default=0)
                 total_unused_height = sum(
                     max(aligned_lower_height - lower_used, 0) + max(upper_section_height - upper_used, 0)
-                    for lower_used, upper_used in zip(lower_used_heights, upper_used_heights)
+                    for lower_used, upper_used in zip(lower_used_heights or [], upper_used_heights or [])
                 )
 
                 current_fit = {
@@ -325,12 +482,132 @@ def calculate_enclosure(incoming_list, outgoing_list, use_terminal_blocks=False)
     return {"status": "No Fit Found"}
 
 
+def calculate_enclosure_3B(incoming_list, outgoing_list, use_terminal_blocks=False):
+    TRANOS_ENCLOSURES = load_Enclosure_registry()
+    all_breakers = incoming_list + outgoing_list
+    required_min_depth = max((get_record_value(breaker, "depth") for breaker in all_breakers), default=0) + 50
+    candidate_heights = sorted({
+        get_record_value(enclosure, "height")
+        for enclosure in TRANOS_ENCLOSURES
+        if get_record_value(enclosure, "width") in {600, 800}
+        and get_record_value(enclosure, "depth") >= required_min_depth
+    })
+
+    incoming_rows, outgoing_rows, incoming_units, outgoing_units = build_3B_layout_units(
+        incoming_list,
+        outgoing_list,
+        use_terminal_blocks,
+    )
+
+    distribution_row = make_service_row(
+        DISTRIBUTION_ROW_HEIGHT,
+        "distribution",
+        "distribution",
+        "Distribution Space",
+    )
+
+    for num_breaker_cubicles in range(1, 11):
+        best_fit = None
+        best_score = None
+
+        for enclosure_height in candidate_heights:
+            usable_height = enclosure_height - (
+                BOTTOM_CLEARANCE + TOP_CLEARANCE + DISTRIBUTION_ROW_HEIGHT
+            )
+            if usable_height < 0:
+                continue
+
+            min_lower_height = 0
+            if incoming_units:
+                min_lower_height = max(unit["total_height"] for unit in incoming_units)
+
+            for lower_section_height in range(int(min_lower_height), int(usable_height + 1), 100):
+                incoming_plan, lower_used_heights = pack_layout_units(
+                    incoming_units,
+                    num_breaker_cubicles,
+                    lower_section_height,
+                    preferred_incoming_cubicles,
+                )
+                if incoming_plan is None:
+                    continue
+
+                upper_section_height = usable_height - lower_section_height
+                outgoing_plan, upper_used_heights = pack_layout_units(
+                    outgoing_units,
+                    num_breaker_cubicles,
+                    upper_section_height,
+                    preferred_outgoing_cubicles,
+                )
+                if outgoing_plan is None:
+                    continue
+
+                aligned_lower_height = max(lower_used_heights or [], default=0)
+                base_layout = {
+                    "lower_rows": incoming_plan,
+                    "upper_rows": outgoing_plan,
+                    "distribution_row": distribution_row,
+                    "lower_section_height": lower_section_height,
+                    "upper_section_height": upper_section_height,
+                    "aligned_lower_height": aligned_lower_height,
+                    "lower_used_heights": lower_used_heights,
+                    "upper_used_heights": upper_used_heights,
+                    "panel_form": "3B",
+                }
+
+                lineup_cubicles, breaker_cubicle_count, termination_cubicle_count = build_3B_lineup_cubicles(base_layout)
+                required_widths = {cubicle["width"] for cubicle in lineup_cubicles}
+                enclosure_details = find_common_3B_enclosure_details(
+                    TRANOS_ENCLOSURES,
+                    enclosure_height,
+                    required_min_depth,
+                    required_widths,
+                )
+                if enclosure_details is None:
+                    continue
+
+                total_lineup_width = sum(cubicle["width"] for cubicle in lineup_cubicles)
+                total_unused_height = sum(
+                    max(aligned_lower_height - lower_used, 0) + max(upper_section_height - upper_used, 0)
+                    for lower_used, upper_used in zip(lower_used_heights or [], upper_used_heights or [])
+                )
+
+                current_fit = {
+                    "status": "Success",
+                    "cubicles": len(lineup_cubicles),
+                    "breaker_cubicles": breaker_cubicle_count,
+                    "termination_cubicles": termination_cubicle_count,
+                    "enclosure_used": {
+                        **enclosure_details,
+                        "panel_form": "3B",
+                        "total_width": total_lineup_width,
+                    },
+                    "layout": {
+                        **base_layout,
+                        "lineup_cubicles": lineup_cubicles,
+                    }
+                }
+
+                current_score = (
+                    total_unused_height,
+                    total_lineup_width,
+                    enclosure_height,
+                )
+
+                if best_score is None or current_score < best_score:
+                    best_score = current_score
+                    best_fit = current_fit
+
+                break
+
+        if best_fit is not None:
+            return best_fit
+
+    return {"status": "No Fit Found"}
+
+
 
 def draw_cubicle_layout(packing_plan, enclosure_details):
     fig = go.Figure()
-    
-    # Extract enclosure dimensions for drawing the outer shells
-    enc_w = get_record_value(enclosure_details, "width", 800)
     enc_h = get_record_value(enclosure_details, "height", 2000)
     lower_section_height = packing_plan.get("aligned_lower_height", packing_plan.get("lower_section_height", 0))
     distribution_row = packing_plan.get("distribution_row", make_service_row(DISTRIBUTION_ROW_HEIGHT, "distribution", "distribution", "Distribution Space"))
@@ -348,8 +625,8 @@ def draw_cubicle_layout(packing_plan, enclosure_details):
             return dict(line_color="SandyBrown", fill_color="rgba(255, 228, 196, 0.7)")
         return dict(line_color="Gray", fill_color="rgba(240, 240, 240, 0.7)")
 
-    def draw_row(row, x_offset, row_y0, row_y1):
-        cp_w = enc_w - 40
+    def draw_row(row, x_offset, row_y0, row_y1, cubicle_width):
+        cp_w = cubicle_width - 40
         style = row_style(row)
 
         fig.add_shape(
@@ -362,7 +639,7 @@ def draw_cubicle_layout(packing_plan, enclosure_details):
 
         if row.get("label"):
             fig.add_annotation(
-                x=x_offset + enc_w / 2,
+                x=x_offset + cubicle_width / 2,
                 y=(row_y0 + row_y1) / 2,
                 text=row["label"],
                 showarrow=False,
@@ -397,44 +674,98 @@ def draw_cubicle_layout(packing_plan, enclosure_details):
             ))
 
             current_x += breaker_width + BREAKER_GAP
-    
-    # Total spacing between cubicles (e.g., 50mm gap for visual clarity)
-    gutter = 100 
-    
-    for cubicle_idx, lower_rows in enumerate(packing_plan.get("lower_rows", [])):
-        # Calculate horizontal starting position for this cubicle
-        x_offset = cubicle_idx * (enc_w + gutter)
-        
-        # 1. Draw the Main Enclosure Frame for this cubicle
-        fig.add_shape(
-            type="rect",
-            x0=x_offset, y0=0, x1=x_offset + enc_w, y1=enc_h,
-            line=dict(color="Black", width=3),
-            fillcolor="rgba(200, 200, 200, 0.1)" # Faint gray background
-        )
-        
-        # Add a label for the cubicle
-        fig.add_annotation(
-            x=x_offset + enc_w/2, y=enc_h + 50,
-            text=f"Cubicle {cubicle_idx + 1}",
-            showarrow=False, font=dict(size=14, weight="bold")
-        )
 
-        current_lower_y = BOTTOM_CLEARANCE
-        for row in lower_rows:
-            row_y0 = current_lower_y
-            row_y1 = current_lower_y + row["cp_height"]
-            draw_row(row, x_offset, row_y0, row_y1)
-            current_lower_y += row["cp_height"]
+    gutter = 100
+    lineup_cubicles = packing_plan.get("lineup_cubicles")
 
-        draw_row(distribution_row, x_offset, distribution_y0, distribution_y1)
+    if lineup_cubicles:
+        current_x_offset = 0
 
-        current_upper_y = distribution_y1 + (upper_used_heights[cubicle_idx] if cubicle_idx < len(upper_used_heights) else 0)
-        for row in packing_plan.get("upper_rows", [[] for _ in packing_plan.get("lower_rows", [])])[cubicle_idx]:
-            row_y1 = current_upper_y
-            row_y0 = current_upper_y - row["cp_height"]
-            draw_row(row, x_offset, row_y0, row_y1)
-            current_upper_y -= row["cp_height"]
+        for cubicle in lineup_cubicles:
+            cubicle_width = cubicle.get("width", 600)
+            x_offset = current_x_offset
+
+            fig.add_shape(
+                type="rect",
+                x0=x_offset, y0=0, x1=x_offset + cubicle_width, y1=enc_h,
+                line=dict(color="Black", width=3),
+                fillcolor="rgba(200, 200, 200, 0.1)"
+            )
+
+            fig.add_annotation(
+                x=x_offset + cubicle_width / 2, y=enc_h + 50,
+                text=cubicle.get("label", "Cubicle"),
+                showarrow=False, font=dict(size=14, weight="bold")
+            )
+
+            if cubicle.get("kind") == "termination":
+                fig.add_shape(
+                    type="rect",
+                    x0=x_offset + 20, y0=BOTTOM_CLEARANCE,
+                    x1=x_offset + cubicle_width - 20, y1=enc_h - TOP_CLEARANCE,
+                    line=dict(color="SandyBrown", width=1, dash="dash"),
+                    fillcolor="rgba(255, 245, 230, 0.7)"
+                )
+                fig.add_annotation(
+                    x=x_offset + cubicle_width / 2,
+                    y=(BOTTOM_CLEARANCE + enc_h - TOP_CLEARANCE) / 2,
+                    text="Cable Termination",
+                    showarrow=False,
+                    font=dict(size=12, color="SaddleBrown")
+                )
+            else:
+                current_lower_y = BOTTOM_CLEARANCE
+                for row in cubicle.get("lower_rows", []):
+                    row_y0 = current_lower_y
+                    row_y1 = current_lower_y + row["cp_height"]
+                    draw_row(row, x_offset, row_y0, row_y1, cubicle_width)
+                    current_lower_y += row["cp_height"]
+
+                draw_row(distribution_row, x_offset, distribution_y0, distribution_y1, cubicle_width)
+
+                upper_rows = cubicle.get("upper_rows", [])
+                current_upper_y = distribution_y1 + sum(row["cp_height"] for row in upper_rows)
+                for row in upper_rows:
+                    row_y1 = current_upper_y
+                    row_y0 = current_upper_y - row["cp_height"]
+                    draw_row(row, x_offset, row_y0, row_y1, cubicle_width)
+                    current_upper_y -= row["cp_height"]
+
+            current_x_offset += cubicle_width + gutter
+    else:
+        enc_w = get_record_value(enclosure_details, "width", 800)
+
+        for cubicle_idx, lower_rows in enumerate(packing_plan.get("lower_rows", [])):
+            x_offset = cubicle_idx * (enc_w + gutter)
+
+            fig.add_shape(
+                type="rect",
+                x0=x_offset, y0=0, x1=x_offset + enc_w, y1=enc_h,
+                line=dict(color="Black", width=3),
+                fillcolor="rgba(200, 200, 200, 0.1)"
+            )
+
+            fig.add_annotation(
+                x=x_offset + enc_w / 2, y=enc_h + 50,
+                text=f"Cubicle {cubicle_idx + 1}",
+                showarrow=False, font=dict(size=14, weight="bold")
+            )
+
+            current_lower_y = BOTTOM_CLEARANCE
+            for row in lower_rows:
+                row_y0 = current_lower_y
+                row_y1 = current_lower_y + row["cp_height"]
+                draw_row(row, x_offset, row_y0, row_y1, enc_w)
+                current_lower_y += row["cp_height"]
+
+            draw_row(distribution_row, x_offset, distribution_y0, distribution_y1, enc_w)
+
+            current_upper_y = distribution_y1 + (upper_used_heights[cubicle_idx] if cubicle_idx < len(upper_used_heights) else 0)
+            for row in packing_plan.get("upper_rows", [[] for _ in packing_plan.get("lower_rows", [])])[cubicle_idx]:
+                row_y1 = current_upper_y
+                row_y0 = current_upper_y - row["cp_height"]
+                draw_row(row, x_offset, row_y0, row_y1, enc_w)
+                current_upper_y -= row["cp_height"]
 
     # Layout Adjustments
     fig.update_layout(
@@ -453,6 +784,11 @@ def render_enclosure_estimator_page():
     st.caption("Use the sidebar to switch between the estimator, enclosure saver, and breaker registry.")
    
     Component_Frames = load_Component_registry()
+    panel_form = st.radio(
+        "Select panel form",
+        options=["Form 2B", "Form 3B"],
+        horizontal=True,
+    )
         
     selected_components1 = st.multiselect(
     "Choose incoming breakers",
@@ -512,11 +848,18 @@ def render_enclosure_estimator_page():
             Selected_outgoing = get_component(Outgoing_components)
             selected_enclosure = {
             }
-            Estimated_Enclosure = calculate_enclosure(
-                Selected_incoming,
-                Selected_outgoing,
-                use_terminal_blocks=use_terminal_blocks,
-            )
+            if panel_form == "Form 3B":
+                Estimated_Enclosure = calculate_enclosure_3B(
+                    Selected_incoming,
+                    Selected_outgoing,
+                    use_terminal_blocks=use_terminal_blocks,
+                )
+            else:
+                Estimated_Enclosure = calculate_enclosure_2B(
+                    Selected_incoming,
+                    Selected_outgoing,
+                    use_terminal_blocks=use_terminal_blocks,
+                )
             Status = Estimated_Enclosure.get("status")
             Cubicle_Count = Estimated_Enclosure.get("cubicles")
             selected_enclosure = Estimated_Enclosure.get("enclosure_used")
@@ -525,6 +868,9 @@ def render_enclosure_estimator_page():
                 st.write(f"Calculation Status: {Status}")
                 st.write(f"Recommended Tranos Enclosure: {selected_enclosure}")
                 st.write(f"Number of Cubicles: {Cubicle_Count}")
+                if panel_form == "Form 3B":
+                    st.write(f"Breaker Cubicles: {Estimated_Enclosure.get('breaker_cubicles')}")
+                    st.write(f"Termination Cubicles: {Estimated_Enclosure.get('termination_cubicles')}")
                 fig = draw_cubicle_layout(Panel_Layout, selected_enclosure)
                 st.plotly_chart(fig, use_container_width=True)
             else:
