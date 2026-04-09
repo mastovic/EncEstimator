@@ -1,31 +1,29 @@
 import sqlite3
 import streamlit as st
+import dotenv
+import os
+from supabase import create_client, Client
+
+dotenv.load_dotenv()
+
+URL = os.getenv("SUPABASE_URL") or ""
+KEY = os.getenv("SUPABASE_KEY") or ""
+
+# Initialize the client
+supabase: Client = create_client(URL, KEY)
 
 TranosEncase=[]
 Height:int
 Width:int
 Depth:int
 
-def saveEnclosureSize(EnclosureSize, db_path="enclosure_sizes.db"):
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS enclosure_sizes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        Height REAL,
-        Width REAL,
-        Depth REAL
-    )
-    """)
-
-    cursor.execute(
-        "INSERT INTO enclosure_sizes (Height, Width, Depth) VALUES (?, ?, ?)",
-        (EnclosureSize[0], EnclosureSize[1], EnclosureSize[2])
-    )
-
-    conn.commit()
-    conn.close()
+def saveEnclosureSize(enclosure_size):
+    data = {
+        "height": enclosure_size[0],
+        "width": enclosure_size[1],
+        "depth": enclosure_size[2],
+    }
+    return supabase.table("enclosure_sizes").insert(data).execute()
 
 def main():
     st.title("Enclosure Size Saver")

@@ -1,5 +1,18 @@
 import sqlite3
 import streamlit as st
+import dotenv
+import os
+
+from supabase import create_client, Client
+
+dotenv.load_dotenv()
+
+URL = os.getenv("SUPABASE_URL") or ""
+KEY = os.getenv("SUPABASE_KEY") or ""
+
+# Initialize the client
+supabase: Client = create_client(URL, KEY)
+
 
 Frame_Registry = {}
 
@@ -49,67 +62,24 @@ class DistributionBlock(componentFrame):
     type = "distribution_block"
     pass  # Inherits everything from componentFrame
 
-# def save_registry(db_path="frame_registry.db"):
-#     conn = sqlite3.connect(db_path)
-#     cursor = conn.cursor()
-
-#     cursor.execute("""
-#     CREATE TABLE IF NOT EXISTS frame_registry (
-#         key TEXT PRIMARY KEY,
-#         class_name TEXT
-#     )
-#     """)
-
-#     for k, v in Frame_Registry.items():
-#         cursor.execute(
-#             "INSERT INTO frame_registry (key, class_name) VALUES (?, ?)",
-#             (k, v.__name__)
-#         )
-
-#     conn.commit()
-#     conn.close()
 
 
 
-def load_registry(db_path="frame_registry.db"):
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+def save_breaker(obj):
+    data = {
+        "class": type(obj).__name__,
+        "model": obj.model,
+        "type": obj.type,
+        "pole": obj.pole,
+        "min_current": obj.Min_current,
+        "max_current": obj.Max_current,
+        "height": obj.height,
+        "width": obj.width,
+        "depth": obj.depth
+    }
 
-    cursor.execute("SELECT key, class_name FROM frame_registry")
-    rows = cursor.fetchall()
-
-    conn.close()
-
-    # Convert back to dictionary
-    return {key: class_name for key, class_name in rows}
-
-
-def save_breaker(obj, db_path="breaker_instances.db"):
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS breaker_instances (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        class TEXT,
-        model TEXT,
-        type TEXT,
-        pole INTEGER,
-        min_current REAL,
-        max_current REAL,
-        height REAL,
-        width REAL,
-        depth REAL
-    )
-    """)
-
-    cursor.execute(
-        "INSERT INTO breaker_instances (class, model, type, pole, min_current, max_current, height, width, depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (type(obj).__name__, obj.model, obj.type, obj.pole, obj.Min_current, obj.Max_current, obj.height, obj.width, obj.depth)
-    )
-
-    conn.commit()
-    conn.close()
+    response = supabase.table("breaker_instances").insert(data).execute()
+    return response
     
 
 

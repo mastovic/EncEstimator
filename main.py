@@ -1,9 +1,19 @@
 import sqlite3
+import dotenv
 import streamlit as st
 import plotly.graph_objects as go
 from typing import Any
 import BreakerFrame
 import EnclosureSizeSaver
+import os
+from dotenv import load_dotenv
+from supabase import create_client, Client
+
+dotenv.load_dotenv()
+
+URL = os.getenv("SUPABASE_URL") or ""
+KEY = os.getenv("SUPABASE_KEY") or ""
+supabase: Client = create_client(URL, KEY)
 
 Component_Frames = []
 TRANOS_ENCLOSURES = []
@@ -17,34 +27,29 @@ BREAKER_GAP = 5
 
 
 
-def load_Component_registry(db_path="breaker_instances.db"):
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row 
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT * FROM breaker_instances")
-    rows = cursor.fetchall()
-
-    conn.close()
-
-    return [dict(row) for row in rows]
+def load_Component_registry():
+    try:
+        response = supabase.table("breaker_instances").select("*").execute()
+        return response.data  
+    except Exception as e:
+        pass
+        return []
 
 
-def load_Enclosure_registry(db_path="Enclosure_sizes.db"):
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT * FROM enclosure_sizes")
-    rows = cursor.fetchall()
-
-    conn.close()
-
-    return [dict(row) for row in rows]
+def load_Enclosure_registry():
+    try:
+        response = supabase.table("enclosure_sizes").select("*").execute()
+        return response.data  
+    except Exception as e:
+        pass
+        return []
 
 
 def get_record_value(record, key, default: Any = 0):
-    return record.get(key, record.get(key.capitalize(), default))
+    value = record.get(key, record.get(key.capitalize(), default))
+    if isinstance(value, (int, float)):
+        return value
+    return default
 
 
 def get_cover_plate_height(breaker_height):
