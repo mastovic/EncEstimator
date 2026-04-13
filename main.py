@@ -11,8 +11,8 @@ from supabase import create_client, Client
 
 dotenv.load_dotenv()
 
-URL = os.getenv("SUPABASE_URL") or ""
-KEY = os.getenv("SUPABASE_KEY") or ""
+URL = st.secrets["SUPABASE_URL"]
+KEY = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(URL, KEY)
 
 Component_Frames = []
