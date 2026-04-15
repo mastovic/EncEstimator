@@ -13,7 +13,10 @@ dotenv.load_dotenv()
 
 URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]
-supabase: Client = create_client(URL, KEY)
+
+# URL = os.getenv("SUPABASE_URL")
+# KEY = os.getenv("SUPABASE_KEY")
+# supabase: Client = create_client(URL or "", KEY or "")
 
 Component_Frames = []
 TRANOS_ENCLOSURES = []
@@ -52,38 +55,71 @@ def get_record_value(record, key, default: Any = 0):
     return default
 
 
+def get_record_text(record, key, default: str = ""):
+    value = record.get(key, record.get(key.capitalize(), default))
+    if value is None:
+        return default
+    return str(value)
+
+
+def get_breaker_type(record):
+    return get_record_text(record, "type", "").strip().lower()
+
+
 def get_cover_plate_height(breaker_height):
     if breaker_height <= 100: return 100
     if breaker_height <= 200: return 200
     return 300
 
 
+def append_2B_breaker_row(processed_rows, group_name, row_breakers, row_width):
+    row_height = max((get_record_value(item, "height") for item in row_breakers), default=0)
+    processed_rows.append({
+        "cp_height": get_cover_plate_height(row_height),
+        "width": row_width,
+        "depth": max(get_record_value(item, "depth") for item in row_breakers),
+        "breakers": row_breakers,
+        "group": group_name,
+        "row_type": "breaker",
+        "label": None,
+    })
+
+
 def build_breaker_rows(group_name, breakers, max_db_width):
     processed_rows = []
+    grouped_breakers = []
     height_map = {}
+    mcb_breakers = []
 
     for breaker in breakers:
+        if get_breaker_type(breaker) == "mcb":
+            mcb_breakers.append(breaker)
+            continue
+
         breaker_height = get_record_value(breaker, "height")
         height_map.setdefault(breaker_height, []).append(breaker)
 
     for breaker_height in sorted(height_map.keys(), reverse=True):
+        grouped_breakers.append(height_map[breaker_height])
+
+    if mcb_breakers:
+        grouped_breakers.append(mcb_breakers)
+
+    grouped_breakers.sort(
+        key=lambda row_breakers: max((get_record_value(item, "height") for item in row_breakers), default=0),
+        reverse=True,
+    )
+
+    for breaker_group in grouped_breakers:
         current_row_breakers = []
         current_row_width = 0
 
-        for breaker in height_map[breaker_height]:
+        for breaker in breaker_group:
             breaker_width = get_record_value(breaker, "width")
             breaker_width_with_gap = breaker_width + BREAKER_GAP
 
             if current_row_width + breaker_width_with_gap > max_db_width and current_row_breakers:
-                processed_rows.append({
-                    "cp_height": get_cover_plate_height(breaker_height),
-                    "width": current_row_width,
-                    "depth": max(get_record_value(item, "depth") for item in current_row_breakers),
-                    "breakers": current_row_breakers,
-                    "group": group_name,
-                    "row_type": "breaker",
-                    "label": None,
-                })
+                append_2B_breaker_row(processed_rows, group_name, current_row_breakers, current_row_width)
                 current_row_breakers = []
                 current_row_width = 0
 
@@ -91,15 +127,7 @@ def build_breaker_rows(group_name, breakers, max_db_width):
             current_row_width += breaker_width_with_gap
 
         if current_row_breakers:
-            processed_rows.append({
-                "cp_height": get_cover_plate_height(breaker_height),
-                "width": current_row_width,
-                "depth": max(get_record_value(item, "depth") for item in current_row_breakers),
-                "breakers": current_row_breakers,
-                "group": group_name,
-                "row_type": "breaker",
-                "label": None,
-            })
+            append_2B_breaker_row(processed_rows, group_name, current_row_breakers, current_row_width)
 
     return processed_rows
 
@@ -140,7 +168,7 @@ def build_layout_units_for_enclosure(incoming_breakers, outgoing_breakers, row_w
 
 
 def get_3B_breaker_cubicle_width(breaker):
-    breaker_type = str(get_record_value(breaker, "type", "")).lower()
+    breaker_type = get_breaker_type(breaker)
     pole_count = int(get_record_value(breaker, "pole", 0) or 0)
 
     if breaker_type == "acb" and pole_count == 4:
@@ -154,10 +182,18 @@ def get_3B_breaker_cubicle_width(breaker):
 
 def rotate_breaker_for_3B(breaker):
     rotated_breaker = dict(breaker)
-    rotated_breaker["width"] = get_record_value(breaker, "height")
-    rotated_breaker["height"] = get_record_value(breaker, "width")
+    if get_breaker_type(breaker) != "acb":
+        rotated_breaker["width"] = get_record_value(breaker, "height")
+        rotated_breaker["height"] = get_record_value(breaker, "width")
     rotated_breaker["required_cubicle_width"] = get_3B_breaker_cubicle_width(breaker)
     return rotated_breaker
+
+
+def get_3B_breaker_row_height(breaker):
+    breaker_height = get_record_value(breaker, "height")
+    if get_breaker_type(breaker) == "acb":
+        return breaker_height
+    return breaker_height + 100
 
 
 def build_3B_breaker_rows(group_name, breakers):
@@ -166,7 +202,7 @@ def build_3B_breaker_rows(group_name, breakers):
     for breaker in breakers:
         rotated_breaker = rotate_breaker_for_3B(breaker)
         processed_rows.append({
-            "cp_height": get_cover_plate_height(get_record_value(rotated_breaker, "height")),
+            "cp_height": get_3B_breaker_row_height(rotated_breaker),
             "width": get_record_value(rotated_breaker, "width") + BREAKER_GAP,
             "depth": get_record_value(rotated_breaker, "depth"),
             "breakers": [rotated_breaker],
