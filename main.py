@@ -16,7 +16,7 @@ KEY = st.secrets["SUPABASE_KEY"]
 
 # URL = os.getenv("SUPABASE_URL")
 # KEY = os.getenv("SUPABASE_KEY")
-# supabase: Client = create_client(URL or "", KEY or "")
+supabase: Client = create_client(URL or "", KEY or "")
 
 Component_Frames = []
 TRANOS_ENCLOSURES = []
