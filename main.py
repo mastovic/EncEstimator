@@ -2,6 +2,7 @@ import sqlite3
 import dotenv
 import streamlit as st
 import plotly.graph_objects as go
+import math
 from typing import Any
 import BreakerFrame
 import EnclosureSizeSaver
@@ -66,16 +67,17 @@ def get_breaker_type(record):
     return get_record_text(record, "type", "").strip().lower()
 
 
-def get_cover_plate_height(breaker_height):
-    if breaker_height <= 100: return 100
-    if breaker_height <= 200: return 200
-    return 300
+def get_cover_plate_height(breaker_height, require_clearance=False):
+    breaker_height = max(float(breaker_height or 0), 0)
+    if require_clearance:
+        return max(100, (math.floor(breaker_height / 100) + 1) * 100)
+    return max(100, math.ceil(breaker_height / 100) * 100)
 
 
-def append_2B_breaker_row(processed_rows, group_name, row_breakers, row_width):
+def append_2B_breaker_row(processed_rows, group_name, row_breakers, row_width, cover_plate_height=None):
     row_height = max((get_record_value(item, "height") for item in row_breakers), default=0)
     processed_rows.append({
-        "cp_height": get_cover_plate_height(row_height),
+        "cp_height": cover_plate_height or get_cover_plate_height(row_height),
         "width": row_width,
         "depth": max(get_record_value(item, "depth") for item in row_breakers),
         "breakers": row_breakers,
@@ -85,8 +87,7 @@ def append_2B_breaker_row(processed_rows, group_name, row_breakers, row_width):
     })
 
 
-def build_breaker_rows(group_name, breakers, max_db_width):
-    processed_rows = []
+def group_breakers_for_brackets(breakers):
     grouped_breakers = []
     height_map = {}
     mcb_breakers = []
@@ -109,8 +110,35 @@ def build_breaker_rows(group_name, breakers, max_db_width):
         key=lambda row_breakers: max((get_record_value(item, "height") for item in row_breakers), default=0),
         reverse=True,
     )
+    return grouped_breakers
 
-    for breaker_group in grouped_breakers:
+
+def group_breakers_for_mounting_plate(breakers):
+    grouped_breakers = []
+    cover_plate_map = {}
+
+    for breaker in breakers:
+        cover_plate_height = get_cover_plate_height(
+            get_record_value(breaker, "height"),
+            require_clearance=True,
+        )
+        cover_plate_map.setdefault(cover_plate_height, []).append(breaker)
+
+    for cover_plate_height in sorted(cover_plate_map.keys(), reverse=True):
+        grouped_breakers.append((cover_plate_height, cover_plate_map[cover_plate_height]))
+
+    return grouped_breakers
+
+
+def build_breaker_rows(group_name, breakers, max_db_width, mounting_type="brackets"):
+    processed_rows = []
+
+    if mounting_type == "mounting plate":
+        grouped_breakers = group_breakers_for_mounting_plate(breakers)
+    else:
+        grouped_breakers = [(None, breaker_group) for breaker_group in group_breakers_for_brackets(breakers)]
+
+    for cover_plate_height, breaker_group in grouped_breakers:
         current_row_breakers = []
         current_row_width = 0
 
@@ -119,7 +147,13 @@ def build_breaker_rows(group_name, breakers, max_db_width):
             breaker_width_with_gap = breaker_width + BREAKER_GAP
 
             if current_row_width + breaker_width_with_gap > max_db_width and current_row_breakers:
-                append_2B_breaker_row(processed_rows, group_name, current_row_breakers, current_row_width)
+                append_2B_breaker_row(
+                    processed_rows,
+                    group_name,
+                    current_row_breakers,
+                    current_row_width,
+                    cover_plate_height=cover_plate_height,
+                )
                 current_row_breakers = []
                 current_row_width = 0
 
@@ -127,14 +161,20 @@ def build_breaker_rows(group_name, breakers, max_db_width):
             current_row_width += breaker_width_with_gap
 
         if current_row_breakers:
-            append_2B_breaker_row(processed_rows, group_name, current_row_breakers, current_row_width)
+            append_2B_breaker_row(
+                processed_rows,
+                group_name,
+                current_row_breakers,
+                current_row_width,
+                cover_plate_height=cover_plate_height,
+            )
 
     return processed_rows
 
 
-def build_layout_units_for_enclosure(incoming_breakers, outgoing_breakers, row_width_limit, use_terminal_blocks):
-    incoming_rows = build_breaker_rows("incoming", incoming_breakers, row_width_limit)
-    outgoing_breaker_rows = build_breaker_rows("outgoing", outgoing_breakers, row_width_limit)
+def build_layout_units_for_enclosure(incoming_breakers, outgoing_breakers, row_width_limit, use_terminal_blocks, mounting_type="brackets"):
+    incoming_rows = build_breaker_rows("incoming", incoming_breakers, row_width_limit, mounting_type)
+    outgoing_breaker_rows = build_breaker_rows("outgoing", outgoing_breakers, row_width_limit, mounting_type)
 
     incoming_units = []
     if use_terminal_blocks and incoming_rows:
@@ -420,7 +460,7 @@ def get_component(selected_components):
     return result
 
 
-def calculate_enclosure_2B(incoming_list, outgoing_list, use_terminal_blocks=False):
+def calculate_enclosure_2B(incoming_list, outgoing_list, use_terminal_blocks=False, mounting_type="brackets"):
     TRANOS_ENCLOSURES = load_Enclosure_registry()
     all_breakers = incoming_list + outgoing_list
     required_min_depth = max((get_record_value(breaker, "depth") for breaker in all_breakers), default=0) + 50
@@ -444,6 +484,7 @@ def calculate_enclosure_2B(incoming_list, outgoing_list, use_terminal_blocks=Fal
                 outgoing_list,
                 row_width_limit,
                 use_terminal_blocks,
+                mounting_type,
             )
 
             distribution_row = make_service_row(
@@ -830,6 +871,13 @@ def render_enclosure_estimator_page():
         options=["Form 2B", "Form 3B"],
         horizontal=True,
     )
+    mounting_type = "brackets"
+    if panel_form == "Form 2B":
+        mounting_type = st.radio(
+            "Select mounting type",
+            options=["Brackets", "Mounting plate"],
+            horizontal=True,
+        ).lower()
         
     selected_components1 = st.multiselect(
     "Choose incoming breakers",
@@ -900,6 +948,7 @@ def render_enclosure_estimator_page():
                     Selected_incoming,
                     Selected_outgoing,
                     use_terminal_blocks=use_terminal_blocks,
+                    mounting_type=mounting_type,
                 )
             Status = Estimated_Enclosure.get("status")
             Cubicle_Count = Estimated_Enclosure.get("cubicles")
@@ -907,6 +956,8 @@ def render_enclosure_estimator_page():
             Panel_Layout = Estimated_Enclosure.get("layout")
             if Status == "Success":
                 st.write(f"Calculation Status: {Status}")
+                if panel_form == "Form 2B":
+                    st.write(f"Mounting Type: {mounting_type.title()}")
                 st.write(f"Recommended Tranos Enclosure: {selected_enclosure}")
                 st.write(f"Number of Cubicles: {Cubicle_Count}")
                 if panel_form == "Form 3B":
