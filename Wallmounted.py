@@ -1,32 +1,28 @@
-import sqlite3
 import dotenv
 import streamlit as st
 import plotly.graph_objects as go
 import math
 from typing import Any
-import BreakerFrame
-import EnclosureSizeSaver
-import Wallmounted
 import os
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
 dotenv.load_dotenv()
 
-URL = st.secrets["SUPABASE_URL"]
-KEY = st.secrets["SUPABASE_KEY"]
+# URL = st.secrets["SUPABASE_URL"]
+# KEY = st.secrets["SUPABASE_KEY"]
 
-# URL = os.getenv("SUPABASE_URL")
-# KEY = os.getenv("SUPABASE_KEY")
+URL = os.getenv("SUPABASE_URL")
+KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(URL or "", KEY or "")
 
 Component_Frames = []
 TRANOS_ENCLOSURES = []
 
-BOTTOM_CLEARANCE = 200
-TOP_CLEARANCE = 100
-DISTRIBUTION_ROW_HEIGHT = 200
-TERMINAL_BLOCK_ROW_HEIGHT = 200
+BOTTOM_CLEARANCE = 0
+TOP_CLEARANCE = 0
+DISTRIBUTION_ROW_HEIGHT = 100
+TERMINAL_BLOCK_ROW_HEIGHT = 100
 CABLE_TERMINATION_ROW_HEIGHT = 100
 BREAKER_GAP = 1
 
@@ -43,7 +39,7 @@ def load_Component_registry():
 
 def load_Enclosure_registry():
     try:
-        response = supabase.table("enclosure_sizes").select("*").execute()
+        response = supabase.table("wallmounted_enclosure_sizes").select("*").execute()
         return response.data  
     except Exception as e:
         pass
@@ -426,7 +422,6 @@ def pack_layout_units(units, num_cubicles, section_height, preferred_cubicles):
 
 def Options_selector_dict(Key, Selection_list):
     choice_list= [d[Key] for d in Selection_list if isinstance(d, dict) and Key in d]
-    print("Choice List:", choice_list)
     return choice_list
 
 def get_disp_component(selected_components):
@@ -443,7 +438,6 @@ def get_disp_component(selected_components):
 def get_component(selected_components):
     Component_Frames = load_Component_registry()
     result = []
-
     for item in selected_components:
         # Extract model name
         if isinstance(item, str):
@@ -863,9 +857,9 @@ def draw_cubicle_layout(packing_plan, enclosure_details):
     
     return fig
 
-def render_enclosure_estimator_page():
-    st.title("Enclosure Size Estimator")
-    st.caption("Use the sidebar to switch between the estimator, enclosure saver, and breaker registry.")
+def main():
+    st.title("Wall Mounted Enclosure Size Estimator")
+    
    
     Component_Frames = load_Component_registry()
     panel_form = st.radio(
@@ -897,13 +891,12 @@ def render_enclosure_estimator_page():
         )
         Incoming_components.extend([comp] * qty1)
 
-    # 4. Display Logic
     if Incoming_components:
-             with st.expander(f"Components Details", expanded=False):
-                data1 = get_disp_component(Incoming_components)
-                st.table(data1)
+        with st.expander(f"Components Details", expanded=False):
+            data1 = get_disp_component(Incoming_components)
+            st.table(data1)
     else:
-           st.info("Select a breaker.")
+        st.info("Select a breaker.")
 
     use_terminal_blocks = st.radio(
         "Will terminal blocks be used?",
@@ -971,17 +964,16 @@ def render_enclosure_estimator_page():
                 st.error("Could not find a valid enclosure for these components.")
 
 
-def main():
-    pages = {
-        "Free Standing Enclosure": render_enclosure_estimator_page,
-        "Enclosure Size Saver": EnclosureSizeSaver.main,
-        "Circuit Breaker Registry": BreakerFrame.main,
-        "Wall Mounted Enclosure": Wallmounted.main
-    }
+# def main():
+#     pages = {
+#         "Enclosure Size Estimator": render_enclosure_estimator_page,
+#         "Enclosure Size Saver": EnclosureSizeSaver.main,
+#         "Circuit Breaker Registry": BreakerFrame.main,
+#     }
 
-    st.sidebar.title("Navigation")
-    selected_page = st.sidebar.radio("Go to", list(pages.keys()))
-    pages[selected_page]()
+#     st.sidebar.title("Navigation")
+#     selected_page = st.sidebar.radio("Go to", list(pages.keys()))
+#     pages[selected_page]()
 
 
 if __name__ == "__main__":
