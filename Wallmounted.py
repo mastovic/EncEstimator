@@ -858,7 +858,7 @@ def draw_cubicle_layout(packing_plan, enclosure_details):
     return fig
 
 def main():
-    st.title("Wall Mounted Enclosure Size Estimator")
+    st.title("Wall Mounted Enclosure Estimator")
     
    
     Component_Frames = load_Component_registry()

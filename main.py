@@ -864,7 +864,7 @@ def draw_cubicle_layout(packing_plan, enclosure_details):
     return fig
 
 def render_enclosure_estimator_page():
-    st.title("Enclosure Size Estimator")
+    st.title("Free Standing Enclosure Estimator")
     st.caption("Use the sidebar to switch between the estimator, enclosure saver, and breaker registry.")
    
     Component_Frames = load_Component_registry()
@@ -974,9 +974,9 @@ def render_enclosure_estimator_page():
 def main():
     pages = {
         "Free Standing Enclosure": render_enclosure_estimator_page,
+        "Wall Mounted Enclosure": Wallmounted.main,
         "Enclosure Size Saver": EnclosureSizeSaver.main,
         "Circuit Breaker Registry": BreakerFrame.main,
-        "Wall Mounted Enclosure": Wallmounted.main
     }
 
     st.sidebar.title("Navigation")
