@@ -865,7 +865,7 @@ def draw_cubicle_layout(packing_plan, enclosure_details):
 
 def render_enclosure_estimator_page():
     st.title("Free Standing Enclosure Estimator")
-    st.caption("Use the sidebar to switch between the estimator, enclosure saver, and breaker registry.")
+    st.caption("Use the sidebar to switch between functionalities. This tool helps estimate the appropriate Tranos enclosure size based on selected incoming and outgoing breakers, panel form, and mounting type.")
    
     Component_Frames = load_Component_registry()
     panel_form = st.radio(
